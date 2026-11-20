@@ -21,11 +21,23 @@
     color: #ff5faf; text-shadow: 0 0 12px rgba(255, 95, 175, .55);
     padding: 0 16px;
   }
+  #switch {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 12px);
+    right: calc(env(safe-area-inset-right, 0px) + 12px);
+    font: 600 14px ui-monospace, Menlo, Consolas, monospace;
+    color: #ffd6ea; background: rgba(255, 95, 175, .15);
+    border: 1px solid rgba(255, 95, 175, .5); border-radius: 999px;
+    padding: 8px 14px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #switch:hover { background: rgba(255, 95, 175, .3); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="dedica"></div>
+<button id="switch" type="button"></button>
 <script>
 "use strict";
 /* Mazzo di fiori 3D in ASCII — port JS di bouquet3d.py.
@@ -280,13 +292,35 @@ function buildScene(seed = 21) {
 }
 
 // impacchetta i punti in array tipizzati (più veloci da scorrere)
-const PTS = TULIPANI ? buildTulipScene() : buildScene();
-const NP = PTS.length;
-const P = new Float32Array(NP * 6), PC = new Float32Array(NP * 3);
-PTS.forEach((p, i) => {
-  for (let k = 0; k < 6; k++) P[i * 6 + k] = p[k];
-  PC[i * 3] = p[6][0]; PC[i * 3 + 1] = p[6][1]; PC[i * 3 + 2] = p[6][2];
-});
+function packScene(pts) {
+  const P = new Float32Array(pts.length * 6), PC = new Float32Array(pts.length * 3);
+  pts.forEach((p, i) => {
+    for (let k = 0; k < 6; k++) P[i * 6 + k] = p[k];
+    PC[i * 3] = p[6][0]; PC[i * 3 + 1] = p[6][1]; PC[i * 3 + 2] = p[6][2];
+  });
+  return { NP: pts.length, P, PC };
+}
+const SCENES = {};                                  // costruite una volta sola, poi in cache
+function getScene(tulipani) {
+  const key = tulipani ? "tulipani" : "misto";
+  return SCENES[key] || (SCENES[key] = packScene(tulipani ? buildTulipScene() : buildScene()));
+}
+let tulipani = TULIPANI;
+let { NP, P, PC } = getScene(tulipani);
+
+const switchBtn = document.getElementById("switch");
+const switchLabel = () => { switchBtn.textContent = tulipani ? "🌸 mazzo misto" : "🌷 tulipani bianchi"; };
+function setScene(tul) {
+  tulipani = tul;
+  ({ NP, P, PC } = getScene(tulipani));
+  switchLabel();
+  const url = new URL(location.href);               // il link condiviso mantiene la scelta
+  if (tulipani) url.searchParams.set("tulipani", "1"); else url.searchParams.delete("tulipani");
+  history.replaceState(null, "", url);
+}
+switchBtn.addEventListener("click", () => setScene(!tulipani));
+window.addEventListener("keydown", e => { if (e.key === "t" || e.key === "T") setScene(!tulipani); });
+switchLabel();
 
 // ------------------------------------------------------------ colori css (cache)
 const COLOR_CACHE = new Array(32768);
