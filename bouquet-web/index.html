@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>for you ♥</title>
+<meta name="description" content="Un mazzo di fiori 3D per te">
+<meta property="og:title" content="for you ♥">
+<meta property="og:description" content="Un mazzo di fiori 3D per te">
+<meta name="theme-color" content="#000000">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { touch-action: none; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  #dedica {
+    position: fixed; left: 0; right: 0;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 3vh);
+    text-align: center; pointer-events: none;
+    font: bold clamp(18px, 4.5vmin, 40px) ui-monospace, Menlo, Consolas, "Courier New", monospace;
+    color: #ff5faf; text-shadow: 0 0 12px rgba(255, 95, 175, .55);
+    padding: 0 16px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="dedica"></div>
+<script>
+"use strict";
+/* Mazzo di fiori 3D in ASCII — port JS di bouquet3d.py.
+   Parametri URL:  ?text=per%20te   ?tulipani   ?speed=0.5   */
+
+// ------------------------------------------------------------ parametri
+const params = new URLSearchParams(location.search);
+const TEXT = params.get("text") || "for you ♥";
+const TULIPANI = params.has("tulipani");
+const SPEED = parseFloat(params.get("speed")) || 1.0;
+document.getElementById("dedica").textContent = TEXT;
+document.title = TEXT;
+
+// ------------------------------------------------------------ colori
+const PINK = [255, 120, 185], RED = [225, 35, 55], PURPLE = [165, 90, 230];
+const YELLOW = [255, 210, 40], ORANGE = [255, 135, 30], WHITE = [250, 250, 250];
+const GOLD_CENTER = [250, 195, 40], DARK_CENTER = [95, 55, 20];
+const STEM = [70, 160, 60], LEAF = [110, 210, 90], LEAF_DARK = [40, 130, 50];
+const PAPER_A = [255, 255, 255], PAPER_B = [255, 50, 150];
+const RIBBON = [235, 50, 130];
+const RED_A = [235, 40, 50], RED_B = [170, 15, 35];
+const RIBBON_WHITE = [255, 255, 255];
+const BLACK = [0, 0, 0];
+
+const FLOWER_TYPES = [            // [petali, centro, n. petali, dimensione centro]
+  [PINK, GOLD_CENTER, 8, 0.28],     // cosmos rosa
+  [RED, DARK_CENTER, 8, 0.28],      // rosso
+  [PURPLE, GOLD_CENTER, 7, 0.26],   // viola
+  [YELLOW, DARK_CENTER, 14, 0.38],  // girasole
+  [ORANGE, DARK_CENTER, 9, 0.30],   // arancione
+  [WHITE, GOLD_CENTER, 12, 0.25],   // margherita
+];
+const TULIP_COLORS = [RED, PINK, YELLOW];
+const WHITE_TULIPS = [[255, 255, 255], [255, 252, 235], [250, 250, 255]];
+const TULIP_BASE = [170, 215, 140];
+
+const RAMP = ".,-~:;=!*#%@";
+const TAU = Math.PI * 2;
+
+// ------------------------------------------------------------ utilità
+function rng(seed) {                       // mulberry32, deterministico
+  let a = seed >>> 0;
+  const r = () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  r.uniform = (lo, hi) => lo + (hi - lo) * r();
+  return r;
+}
+const norm = v => { const n = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / n, v[1] / n, v[2] / n]; };
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const add = (p, d, k = 1) => [p[0] + d[0] * k, p[1] + d[1] * k, p[2] + d[2] * k];
+const mix = (c1, c2, t) => [c1[0] + (c2[0] - c1[0]) * t, c1[1] + (c2[1] - c1[1]) * t, c1[2] + (c2[2] - c1[2]) * t];
+function basis(axis) {
+  const helper = Math.abs(axis[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const u = norm(cross(helper, axis));
+  return [u, cross(axis, u)];
+}
+const LIGHT = norm([-0.45, 0.35, 0.9]);
+
+// ------------------------------------------------------------ scena
+class Scene {
+  constructor() { this.pts = []; }      // [x, y, z, nx, ny, nz, rgb]
+  add(p, n, col) { this.pts.push([p[0], p[1], p[2], n[0], n[1], n[2], col]); }
+}
+
+function makeFlower(sc, pos, axis, R, petal, center, nPetals, cfrac, rnd) {
+  const [u, v] = basis(axis);
+  const rot = rnd.uniform(0, TAU);
+  for (let k = 0; k < nPetals; k++) {
+    const th0 = rot + TAU * k / nPetals;
+    for (let i = 0; i < 16; i++) {
+      const t = (i + 0.5) / 16;
+      const r = cfrac + (1 - cfrac) * t;
+      const half = (Math.PI / nPetals) * 0.95 * Math.pow(Math.sin(Math.PI * (0.12 + 0.8 * t)), 0.7);
+      const cup = 0.3 * r * r * R;
+      const base = mix(mix(petal, BLACK, 0.25 * (1 - t)), WHITE, 0.18 * t);
+      for (let j = 0; j < 9; j++) {
+        const kk = 2 * (j + 0.5) / 9 - 1;
+        const a = th0 + half * kk;
+        const col = Math.abs(kk) > 0.8 ? mix(base, BLACK, 0.45) : base;   // bordo petalo
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const dx = [u[0] * ca + v[0] * sa, u[1] * ca + v[1] * sa, u[2] * ca + v[2] * sa];
+        const p = add(add(pos, dx, r * R), axis, cup);
+        sc.add(p, norm(add(axis, dx, -0.6 * r)), col);
+      }
+    }
+  }
+  // centro a cupola, puntinato
+  const cR = cfrac * R * 1.05;
+  for (let i = 0; i < 7; i++) {
+    const th = (i + 0.5) / 7 * (Math.PI / 2);
+    const ring = Math.max(6, Math.floor(28 * Math.sin(th)));
+    for (let j = 0; j < ring; j++) {
+      const ph = TAU * j / ring;
+      let d = add(add([0, 0, 0], u, Math.cos(ph) * Math.sin(th)), v, Math.sin(ph) * Math.sin(th));
+      d = add(d, axis, Math.cos(th));
+      const p = add(add(pos, d, cR), axis, -0.35 * cR);
+      const col = (i + j) % 3 ? center : mix(center, BLACK, 0.35);
+      sc.add(p, norm(d), col);
+    }
+  }
+}
+
+function makeTulip(sc, pos, axis, R, col, baseTint = null) {
+  // 3 petali esterni + 3 interni sfalsati, con pieghe più scure
+  const [u, v] = basis(axis);
+  const layers = [[0.0, 1.0, 0.8], [Math.PI / 3, 0.86, 0.86]];
+  layers.forEach(([rot, scale, tip], layer) => {
+    for (let i = 0; i < 26; i++) {
+      const t = (i + 0.5) / 26;
+      const rr = R * scale * (0.12 + 0.5 * Math.sin(Math.PI * (0.18 + 0.62 * t)));
+      const h = t * R * 1.5;
+      let shade = mix(mix(col, BLACK, 0.3), col, Math.min(1, t * 1.6));
+      if (baseTint && t < 0.3) shade = mix(baseTint, shade, t / 0.3);   // sfumatura alla base
+      for (let j = 0; j < 44; j++) {
+        const ph = TAU * j / 44 + rot;
+        const lobe = Math.abs(Math.cos(1.5 * (ph - rot)));
+        if (t > tip + (1 - tip) * lobe) continue;                        // punte dei petali
+        const c = (lobe < 0.18 && layer === 0) ? mix(shade, BLACK, 0.3) : shade;  // piega
+        const d = add(add([0, 0, 0], u, Math.cos(ph)), v, Math.sin(ph));
+        const p = add(add(pos, d, rr), axis, h);
+        sc.add(p, norm(add(d, axis, -0.3)), c);
+      }
+    }
+  });
+}
+
+function makeStem(sc, a, b, col, steps = 50) {
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    for (const [ox, oz] of [[0.012, 0], [-0.012, 0], [0, 0.012], [0, -0.012]])
+      sc.add([p[0] + ox, p[1], p[2] + oz], norm([ox, 0, oz]), col);
+  }
+}
+
+function makeLeaf(sc, base, theta, length, up = 0.45, width = 0.11, droop = 0.35) {
+  const d = norm([Math.cos(theta) * 0.8, up, Math.sin(theta) * 0.8]);
+  const s = [-Math.sin(theta), 0, Math.cos(theta)];
+  const n = norm(cross(d, s));
+  for (let i = 0; i < 30; i++) {
+    const t = (i + 0.5) / 30;
+    const w = width * Math.pow(Math.sin(Math.PI * t), 0.8);
+    let spine = add(base, d, t * length);
+    spine = add(spine, [0, 1, 0], -droop * t * t * length);              // si piega in giù
+    for (let j = 0; j < 9; j++) {
+      const k = 2 * (j + 0.5) / 9 - 1;
+      let p = add(spine, s, k * w);
+      p = add(p, [0, 1, 0], 0.03 * (1 - k * k));                         // piega centrale
+      const col = Math.abs(k) < 0.15 ? LEAF_DARK : mix(LEAF, LEAF_DARK, Math.abs(k) * 0.4);
+      sc.add(p, n, col);
+    }
+  }
+}
+
+function makeWrap(sc, neckY, topY, paper = [PAPER_A, PAPER_B], ribbon = RIBBON) {
+  // cono di carta a righe
+  for (let i = 0; i < 55; i++) {
+    const t = (i + 0.5) / 55;
+    const y = neckY + (topY - neckY) * t;
+    const r = 0.1 + 0.45 * t;
+    for (let j = 0; j < 150; j++) {
+      const ph = TAU * j / 150;
+      if (t > 0.9 + 0.1 * Math.cos(5 * ph)) continue;                    // bordo ondulato
+      const col = Math.floor(ph / TAU * 18) % 2 ? paper[0] : paper[1];
+      sc.add([r * Math.cos(ph), y, r * Math.sin(ph)], norm([Math.cos(ph), -0.45, Math.sin(ph)]), col);
+    }
+  }
+  // gambi sotto la carta
+  for (let i = 0; i < 30; i++) {
+    const y = neckY - 0.5 * i / 29;
+    for (let j = 0; j < 18; j++) {
+      const ph = TAU * j / 18;
+      sc.add([0.07 * Math.cos(ph), y, 0.07 * Math.sin(ph)], [Math.cos(ph), 0, Math.sin(ph)], STEM);
+    }
+  }
+  // nastro
+  for (let i = 0; i < 6; i++) {
+    const y = neckY + 0.01 + 0.012 * i;
+    for (let j = 0; j < 60; j++) {
+      const ph = TAU * j / 60;
+      sc.add([0.12 * Math.cos(ph), y, 0.12 * Math.sin(ph)], [Math.cos(ph), 0, Math.sin(ph)], ribbon);
+    }
+  }
+  // fiocco (due anelli) e codine, sul davanti (z+)
+  const cy = neckY + 0.04;
+  for (const side of [-1, 1]) {
+    for (let j = 0; j < 60; j++) {
+      const ph = TAU * j / 60;
+      const x = side * (0.08 + 0.07 * (1 + Math.cos(ph)) / 2 * 1.4);
+      sc.add([x, cy + 0.045 * Math.sin(ph), 0.14], [0, 0, 1], ribbon);
+    }
+    for (let i = 0; i < 25; i++) {
+      const t = i / 24;
+      sc.add([side * (0.02 + 0.08 * t), cy - 0.02 - 0.22 * t, 0.14], [0, 0, 1], ribbon);
+    }
+  }
+}
+
+function buildTulipScene(seed = 5) {
+  const rnd = rng(seed), sc = new Scene();
+  const neck = [0, -0.55, 0], C = [0, -0.16, 0], D = 0.78, N = 8;
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < N; i++) {
+    const el = (80 - 42 * Math.sqrt(i / (N - 1))) * Math.PI / 180;
+    const az = i * golden + rnd.uniform(-0.15, 0.15);
+    const d = [Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)];
+    const pos = add(C, d, D * rnd.uniform(0.9, 1.06));
+    const axis = norm(add(d, [0, 1, 0], 0.5));                           // guardano più in su
+    makeStem(sc, pos, neck, STEM);
+    makeTulip(sc, add(pos, axis, -0.05), axis, rnd.uniform(0.16, 0.19),
+              WHITE_TULIPS[i % WHITE_TULIPS.length], TULIP_BASE);
+  }
+  for (let k = 0; k < 7; k++) {
+    const th = k * TAU / 7 + 0.2;
+    makeLeaf(sc, [0.16 * Math.cos(th), 0, 0.16 * Math.sin(th)], th, rnd.uniform(0.5, 0.65), 1.1, 0.08, 0.6);
+  }
+  makeWrap(sc, neck[1], 0.12, [RED_A, RED_B], RIBBON_WHITE);
+  return sc.pts;
+}
+
+function buildScene(seed = 21) {
+  const rnd = rng(seed), sc = new Scene();
+  const neck = [0, -0.55, 0], C = [0, 0.05, 0], D = 0.78, N = 9;
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  const tulipSlots = new Set([2, 6]);
+  let fi = 0;
+  for (let i = 0; i < N; i++) {
+    const el = (82 - 60 * Math.sqrt(i / (N - 1))) * Math.PI / 180;
+    const az = i * golden;
+    const d = [Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)];
+    const pos = add(C, d, D * rnd.uniform(0.92, 1.05));
+    const axis = norm(d);
+    makeStem(sc, add(pos, axis, -0.03), neck, STEM);
+    if (tulipSlots.has(i)) {
+      makeTulip(sc, add(pos, axis, -0.12), axis, 0.2, TULIP_COLORS[i % TULIP_COLORS.length]);
+    } else {
+      const [petal, center, n, cf] = FLOWER_TYPES[fi % FLOWER_TYPES.length];
+      fi++;
+      makeFlower(sc, pos, axis, n >= 12 ? 0.27 : 0.22, petal, center, n, cf, rnd);
+    }
+  }
+  for (let k = 0; k < 6; k++) {
+    const th = k * TAU / 6 + 0.4;
+    makeLeaf(sc, [0.2 * Math.cos(th), 0.02, 0.2 * Math.sin(th)], th, 0.55);
+  }
+  makeWrap(sc, neck[1], 0.12);
+  return sc.pts;
+}
+
+// impacchetta i punti in array tipizzati (più veloci da scorrere)
+const PTS = TULIPANI ? buildTulipScene() : buildScene();
+const NP = PTS.length;
+const P = new Float32Array(NP * 6), PC = new Float32Array(NP * 3);
+PTS.forEach((p, i) => {
+  for (let k = 0; k < 6; k++) P[i * 6 + k] = p[k];
+  PC[i * 3] = p[6][0]; PC[i * 3 + 1] = p[6][1]; PC[i * 3 + 2] = p[6][2];
+});
+
+// ------------------------------------------------------------ colori css (cache)
+const COLOR_CACHE = new Array(32768);
+function css(r, g, b) {
+  const q = c => Math.max(0, Math.min(31, Math.round(c / 255 * 31)));
+  const key = (q(r) << 10) | (q(g) << 5) | q(b);
+  return COLOR_CACHE[key] ||
+    (COLOR_CACHE[key] = `rgb(${Math.round(q(r) * 255 / 31)},${Math.round(q(g) * 255 / 31)},${Math.round(q(b) * 255 / 31)})`);
+}
+
+// ------------------------------------------------------------ render
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d", { alpha: false });
+let W, H, cw, ch, scale, cx, cy, zbuf, light, pid, edge, spark, sparkles;
+
+function layout() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const unitPx = Math.min(h / 2.45, w / 2.9);     // pixel per unità di scena
+  ch = Math.max(7, unitPx / 32);                  // altezza cella (≈ 64 righe sul mazzo)
+  cw = ch * 0.5;                                  // celle 1:2 come nel terminale
+  W = Math.ceil(w / cw); H = Math.ceil(h / ch);
+  scale = unitPx / ch;                            // righe per unità
+  cx = W / 2; cy = H * 0.45;
+
+  const n = W * H;
+  zbuf = new Float32Array(n); light = new Float32Array(n);
+  pid = new Int32Array(n); edge = new Uint8Array(n); spark = new Int32Array(n);
+
+  const rnd = rng(7);
+  const scols = [[255, 255, 255], [255, 230, 120], [255, 160, 210]];
+  sparkles = [];
+  for (let i = 0, m = Math.floor(n / 90); i < m; i++)
+    sparkles.push([Math.floor(rnd() * W), Math.floor(rnd() * H), rnd.uniform(0, TAU),
+                   rnd.uniform(1.5, 4), scols[Math.floor(rnd() * 3)]]);
+
+  ctx.font = `bold ${(cw / 0.6).toFixed(2)}px ui-monospace, Menlo, Consolas, "Courier New", monospace`;
+  ctx.textBaseline = "top";
+}
+
+function frame(angle, t) {
+  const n = W * H;
+  const ca = Math.cos(angle), sa = Math.sin(angle);
+  const tilt = 0.35, ct = Math.cos(tilt), st = Math.sin(tilt);
+  const [lx, ly, lz] = LIGHT;
+  const dist = 4.0, sxk = scale * 2.0, syk = scale;
+  zbuf.fill(-1e9); pid.fill(-1); edge.fill(0); spark.fill(-1);
+
+  for (let i = 0; i < NP; i++) {
+    const o = i * 6;
+    const x = P[o], y = P[o + 1], z = P[o + 2];
+    const x1 = x * ca + z * sa;
+    const z1 = -x * sa + z * ca;
+    const y2 = y * ct - z1 * st;
+    const z2 = y * st + z1 * ct;
+    const f = dist / (dist - z2);
+    const px = Math.floor(cx + x1 * f * sxk);
+    const py = Math.floor(cy - y2 * f * syk);
+    if (px < 0 || px >= W || py < 0 || py >= H) continue;
+    const idx = py * W + px;
+    if (z2 > zbuf[idx]) {
+      zbuf[idx] = z2;
+      const nx = P[o + 3], ny = P[o + 4], nz = P[o + 5];
+      const nx1 = nx * ca + nz * sa;
+      const nz1 = -nx * sa + nz * ca;
+      const ny2 = ny * ct - nz1 * st;
+      const nz2 = ny * st + nz1 * ct;
+      light[idx] = Math.abs(nx1 * lx + ny2 * ly + nz2 * lz);
+      pid[idx] = i;
+    }
+  }
+
+  // contorni: vicino pieno ma molto più lontano -> punto più scuro
+  const gap = 0.09;
+  for (let idx = 0; idx < n; idx++) {
+    if (pid[idx] < 0) continue;
+    const z = zbuf[idx] - gap, x = idx % W;
+    const nb = [x > 0 ? idx - 1 : -1, x < W - 1 ? idx + 1 : -1, idx - W, idx < W * (H - 1) ? idx + W : -1];
+    for (const m of nb) {
+      if (m >= 0 && zbuf[m] > -1e8 && zbuf[m] < z) { edge[idx] = 1; break; }
+    }
+  }
+
+  // stelline che brillano
+  sparkles.forEach(([sx, sy, ph, sp], k) => {
+    const idx = sy * W + sx;
+    if (pid[idx] < 0 && Math.sin(t * sp + ph) > 0.55) spark[idx] = k;
+  });
+
+  // disegno
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W * cw, H * ch);
+  let cur = null;
+  for (let idx = 0; idx < n; idx++) {
+    let chr, color;
+    const i = pid[idx];
+    if (i >= 0) {
+      const l = 0.2 + 0.8 * light[idx];
+      let ri = Math.min(RAMP.length - 1, Math.floor(l * RAMP.length));
+      let k = 0.8 + 0.2 * l;
+      if (edge[idx]) { k = 0.55; ri = Math.max(0, ri - 3); }
+      chr = RAMP[ri];
+      color = css(PC[i * 3] * k, PC[i * 3 + 1] * k, PC[i * 3 + 2] * k);
+    } else if (spark[idx] >= 0) {
+      const [, , ph, sp, sc] = sparkles[spark[idx]];
+      const v = Math.sin(t * sp + ph);
+      chr = v > 0.9 ? "*" : v > 0.75 ? "+" : ".";
+      color = css(sc[0], sc[1], sc[2]);
+    } else continue;
+    if (color !== cur) { ctx.fillStyle = color; cur = color; }
+    ctx.fillText(chr, (idx % W) * cw, Math.floor(idx / W) * ch);
+  }
+}
+
+// ------------------------------------------------------------ animazione + trascinamento
+let dragOffset = 0, dragging = false, lastX = 0;
+canvas.addEventListener("pointerdown", e => { dragging = true; lastX = e.clientX; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener("pointermove", e => {
+  if (!dragging) return;
+  dragOffset += (e.clientX - lastX) * 0.01; lastX = e.clientX;
+});
+const stopDrag = () => { dragging = false; };
+canvas.addEventListener("pointerup", stopDrag);
+canvas.addEventListener("pointercancel", stopDrag);
+
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(layout, 100); });
+layout();
+
+const t0 = performance.now();
+function loop(now) {
+  const t = (now - t0) / 1000;
+  frame(t * 0.8 * SPEED + dragOffset, t);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
